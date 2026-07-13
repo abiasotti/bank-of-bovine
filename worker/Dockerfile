@@ -8,7 +8,9 @@ RUN go mod download
 COPY . .
 RUN CGO_ENABLED=0 go build -o /worker .
 
-FROM alpine:3.20
-RUN apk add --no-cache ca-certificates
+FROM alpine:3
+RUN apk add --no-cache ca-certificates \
+    && addgroup -S worker && adduser -S worker -G worker
 COPY --from=builder /worker /usr/local/bin/worker
+USER worker
 CMD ["worker"]

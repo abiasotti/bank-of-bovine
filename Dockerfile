@@ -25,7 +25,12 @@ WORKDIR /app
 ENV NODE_ENV=production
 
 RUN addgroup --system --gid 1001 nodejs \
-    && adduser --system --uid 1001 nextjs
+    && adduser --system --uid 1001 nextjs \
+    # The standalone runtime never calls npm/npx (it just runs
+    # server.js) - strip the base image's bundled npm so a CVE in one of
+    # npm's own dependencies (e.g. undici) doesn't show up as a finding
+    # against code this image never executes.
+    && rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 COPY --from=builder /app/public ./public
 COPY --from=builder --chown=nextjs:nodejs /app/.next/standalone ./
