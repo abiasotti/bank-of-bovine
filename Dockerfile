@@ -19,6 +19,13 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 RUN npx prisma generate
 RUN npm run build
+# This stage is also shipped directly as the migrate image (see
+# docker-compose.yml / publish.yml), which only ever needs to run
+# `node_modules/.bin/prisma migrate deploy` - not npm/npx themselves. Strip
+# the base image's bundled npm now that the build commands above are done
+# with it, so a CVE in one of npm's own dependencies (e.g. undici) doesn't
+# show up as a finding against code this image never executes.
+RUN rm -rf /usr/local/lib/node_modules/npm /usr/local/bin/npm /usr/local/bin/npx
 
 FROM node:26-alpine AS runner
 WORKDIR /app
