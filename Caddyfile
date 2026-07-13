@@ -13,3 +13,11 @@
 		flush_interval -1
 	}
 }
+
+# Redirect www to the bare domain rather than serving both as
+# equivalent hosts - auth cookies are host-only, so a session started on
+# one hostname wouldn't carry over to the other and users bouncing
+# between them would look logged out.
+www.{$DOMAIN:localhost} {
+	redir https://{$DOMAIN:localhost}{uri} permanent
+}
