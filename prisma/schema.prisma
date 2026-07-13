@@ -1,0 +1,266 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client"
+  output   = "../lib/generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// Phase 1 note: money amounts use Decimal @db.Decimal(18, 4), share
+// quantities use Decimal @db.Decimal(18, 6). Never coerce these to JS
+// number — see lib/money.ts.
+//
+// Several invariants below (amount <> 0, quantity > 0, "exactly one of
+// transferId/executionId is set", etc.) are enforced via CHECK constraints
+// added in a follow-up hand-written migration, since Prisma's schema
+// language has no declarative CHECK-constraint attribute. See
+// prisma/migrations/*_add_check_constraints/migration.sql.
+
+model User {
+  id           String   @id @default(uuid()) @db.Uuid
+  email        String   @unique
+  passwordHash String
+  displayName  String
+  role         String   @default("user")
+  createdAt    DateTime @default(now())
+
+  account             Account?
+  externalBankAccount ExternalBankAccount?
+
+  @@map("users")
+}
+
+// One brokerage account per user in Phase 1 (userId is unique). No balance
+// column — cash balance is always derived by summing LedgerEntry.amount.
+model Account {
+  id          String   @id @default(uuid()) @db.Uuid
+  userId      String   @unique @db.Uuid
+  accountType String   @default("brokerage")
+  createdAt   DateTime @default(now())
+
+  user          User          @relation(fields: [userId], references: [id])
+  ledgerEntries LedgerEntry[]
+  transfers     Transfer[]
+  orders        Order[]
+  taxLots       TaxLot[]
+  executions    Execution[]
+  watchlist     Watchlist?
+
+  @@map("accounts")
+}
+
+// The fake, effectively-infinite-balance funding source. No balance column
+// at all: "infinite" is an application-level rule (no debit check), not data.
+model ExternalBankAccount {
+  id        String   @id @default(uuid()) @db.Uuid
+  userId    String   @unique @db.Uuid
+  createdAt DateTime @default(now())
+
+  user      User       @relation(fields: [userId], references: [id])
+  transfers Transfer[]
+
+  @@map("external_bank_accounts")
+}
+
+// The event-sourced ledger core. Every cash movement is one row here;
+// balances are SUM(amount) WHERE accountId = ?, never a mutable column.
+// Single-entry per transfer (the external account gets no row - see spec
+// decision log / plan "Ledger design").
+model LedgerEntry {
+  id          String   @id @default(uuid()) @db.Uuid
+  accountId   String   @db.Uuid
+  entryType   String // 'transfer_in' | 'buy' | 'sell'
+  amount      Decimal  @db.Decimal(18, 4) // signed: positive = credit, negative = debit
+  transferId  String?  @db.Uuid
+  executionId String?  @db.Uuid
+  occurredAt  DateTime @default(now())
+  createdAt   DateTime @default(now())
+
+  account   Account    @relation(fields: [accountId], references: [id])
+  // Explicit Restrict (Prisma defaults nullable relations to SetNull):
+  // ledger_entries is an immutable audit log, so nothing may delete a
+  // Transfer/Execution while entries still reference it - that would both
+  // corrupt the audit trail and violate the "exactly one reference" CHECK.
+  transfer  Transfer?  @relation(fields: [transferId], references: [id], onDelete: Restrict)
+  execution Execution? @relation(fields: [executionId], references: [id], onDelete: Restrict)
+
+  @@index([accountId, occurredAt])
+  @@map("ledger_entries")
+}
+
+model Transfer {
+  id                    String   @id @default(uuid()) @db.Uuid
+  accountId             String   @db.Uuid
+  externalBankAccountId String   @db.Uuid
+  direction             String   @default("deposit") // Phase 1 only supports 'deposit'
+  amount                Decimal  @db.Decimal(18, 4)
+  status                String   @default("completed") // always synchronous in Phase 1
+  createdAt             DateTime @default(now())
+
+  account             Account             @relation(fields: [accountId], references: [id])
+  externalBankAccount ExternalBankAccount @relation(fields: [externalBankAccountId], references: [id])
+  ledgerEntries       LedgerEntry[]
+
+  @@map("transfers")
+}
+
+model Security {
+  id         String   @id @default(uuid()) @db.Uuid
+  symbol     String   @unique
+  name       String
+  exchange   String   @default("MOCK")
+  isActive   Boolean  @default(true)
+  createdAt  DateTime @default(now())
+
+  quotes         Quote[]
+  orders         Order[]
+  taxLots        TaxLot[]
+  executions     Execution[]
+  watchlistItems WatchlistItem[]
+
+  @@map("securities")
+}
+
+// Every provider tick appends a row - this table also serves as the
+// historical price-chart data source, no separate history table needed.
+model Quote {
+  id         String   @id @default(uuid()) @db.Uuid
+  securityId String   @db.Uuid
+  price      Decimal  @db.Decimal(18, 4)
+  asOf       DateTime
+  source     String   @default("mock") // 'mock' | 'finnhub'
+  createdAt  DateTime @default(now())
+
+  // Day high/low/open + previous close - Finnhub's /quote response includes
+  // these on every call at no extra request cost (h/l/o/pc fields), so we
+  // capture them instead of discarding everything but current price. Null
+  // for the mock provider, which has no real OHLC concept.
+  dayHigh       Decimal? @db.Decimal(18, 4)
+  dayLow        Decimal? @db.Decimal(18, 4)
+  dayOpen       Decimal? @db.Decimal(18, 4)
+  previousClose Decimal? @db.Decimal(18, 4)
+
+  security Security @relation(fields: [securityId], references: [id])
+
+  @@index([securityId, asOf(sort: Desc)])
+  @@map("quotes")
+}
+
+// No partial fills in Phase 1: every order either fills completely at
+// evaluation time or stays pending/cancelled/expired.
+model Order {
+  id                 String    @id @default(uuid()) @db.Uuid
+  accountId          String    @db.Uuid
+  securityId         String    @db.Uuid
+  side               String // 'buy' | 'sell'
+  orderType          String // 'market' | 'limit' | 'stop'
+  timeInForce        String // 'day' | 'gtc'
+  quantity           Decimal   @db.Decimal(18, 6)
+  limitPrice         Decimal?  @db.Decimal(18, 4) // required if orderType = 'limit'
+  stopPrice          Decimal?  @db.Decimal(18, 4) // required if orderType = 'stop'
+  lotSelectionMethod String? // 'fifo' | 'lifo' | 'specific' - sells only
+  specificLotIds     String[] // only set when lotSelectionMethod = 'specific'
+  status             String    @default("pending") // 'pending'|'filled'|'cancelled'|'expired'
+  submittedAt        DateTime  @default(now())
+  expiresAt          DateTime? // set for 'day' orders, null for GTC
+  filledAt           DateTime?
+  cancelledAt        DateTime?
+
+  account    Account     @relation(fields: [accountId], references: [id])
+  security   Security    @relation(fields: [securityId], references: [id])
+  executions Execution[]
+
+  @@index([status, securityId])
+  @@index([accountId, submittedAt(sort: Desc)])
+  @@map("orders")
+}
+
+// openQuantity is the one deliberate mutable-field exception in an
+// otherwise append-only design: always updated in the same transaction as
+// the LotConsumption row that justifies the change, so it stays auditable.
+model TaxLot {
+  id                String   @id @default(uuid()) @db.Uuid
+  accountId         String   @db.Uuid
+  securityId        String   @db.Uuid
+  executionId       String   @db.Uuid // the buy execution that created this lot
+  quantity          Decimal  @db.Decimal(18, 6) // original lot size
+  openQuantity      Decimal  @db.Decimal(18, 6) // remaining unsold qty
+  costBasisPerShare Decimal  @db.Decimal(18, 4)
+  acquiredAt        DateTime
+  createdAt         DateTime @default(now())
+
+  account         Account          @relation(fields: [accountId], references: [id])
+  security        Security         @relation(fields: [securityId], references: [id])
+  execution       Execution        @relation("BuyExecutionLots", fields: [executionId], references: [id])
+  lotConsumptions LotConsumption[]
+
+  @@index([accountId, securityId, acquiredAt])
+  @@map("tax_lots")
+}
+
+model Execution {
+  id               String    @id @default(uuid()) @db.Uuid
+  orderId          String    @db.Uuid
+  accountId        String    @db.Uuid
+  securityId       String    @db.Uuid
+  side             String // 'buy' | 'sell'
+  quantity         Decimal   @db.Decimal(18, 6)
+  price            Decimal   @db.Decimal(18, 4) // fill price
+  executedAt       DateTime  @default(now())
+  realizedGainLoss Decimal?  @db.Decimal(18, 4) // sells only, null for buys
+
+  order           Order            @relation(fields: [orderId], references: [id])
+  account         Account          @relation(fields: [accountId], references: [id])
+  security        Security         @relation(fields: [securityId], references: [id])
+  ledgerEntries   LedgerEntry[]
+  taxLotsCreated  TaxLot[]         @relation("BuyExecutionLots")
+  lotConsumptions LotConsumption[]
+
+  @@index([accountId, securityId, executedAt])
+  @@map("executions")
+}
+
+// Which lots a sell execution consumed, and how much - makes FIFO/LIFO/
+// specific-lot fully auditable since a single sell can span multiple lots.
+model LotConsumption {
+  id                String  @id @default(uuid()) @db.Uuid
+  executionId       String  @db.Uuid // the sell execution
+  taxLotId          String  @db.Uuid // the lot being drawn down
+  quantityConsumed  Decimal @db.Decimal(18, 6)
+  costBasisPerShare Decimal @db.Decimal(18, 4) // snapshot at consumption time
+  realizedGainLoss  Decimal @db.Decimal(18, 4)
+
+  execution Execution @relation(fields: [executionId], references: [id])
+  taxLot    TaxLot    @relation(fields: [taxLotId], references: [id])
+
+  @@unique([executionId, taxLotId])
+  @@map("lot_consumptions")
+}
+
+model Watchlist {
+  id        String   @id @default(uuid()) @db.Uuid
+  accountId String   @unique @db.Uuid
+  createdAt DateTime @default(now())
+
+  account Account         @relation(fields: [accountId], references: [id])
+  items   WatchlistItem[]
+
+  @@map("watchlists")
+}
+
+model WatchlistItem {
+  id          String   @id @default(uuid()) @db.Uuid
+  watchlistId String   @db.Uuid
+  securityId  String   @db.Uuid
+  addedAt     DateTime @default(now())
+
+  watchlist Watchlist @relation(fields: [watchlistId], references: [id])
+  security  Security  @relation(fields: [securityId], references: [id])
+
+  @@unique([watchlistId, securityId])
+  @@map("watchlist_items")
+}
