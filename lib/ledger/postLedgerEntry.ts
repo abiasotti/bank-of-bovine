@@ -1,30 +1,33 @@
 import type { Prisma } from "@/lib/generated/prisma/client";
 import { Decimal, toMoney } from "@/lib/money";
 
-export type LedgerEntryType = "transfer_in" | "buy" | "sell";
+export type LedgerEntryType = "seed_funding" | "buy" | "sell";
 
 interface PostLedgerEntryInput {
   accountId: string;
   entryType: LedgerEntryType;
   amount: Decimal.Value; // signed: positive = credit, negative = debit
-  transferId?: string;
   executionId?: string;
   occurredAt?: Date;
 }
 
 // Must be called with a transaction client and inside the same transaction
-// as the transfer/execution row it references, so a failed execution never
-// leaves an orphaned ledger entry. Mirrors the DB CHECK constraint that
-// exactly one of transferId/executionId is set.
+// as the execution row it references (buy/sell), so a failed execution
+// never leaves an orphaned ledger entry. Mirrors the DB CHECK constraint:
+// buy/sell entries require an executionId, seed_funding entries must not
+// have one (there's no source row to point at - it's the account's fixed
+// starting balance).
 export async function postLedgerEntry(
   tx: Prisma.TransactionClient,
   input: PostLedgerEntryInput,
 ) {
-  const hasTransfer = Boolean(input.transferId);
+  const requiresExecution = input.entryType === "buy" || input.entryType === "sell";
   const hasExecution = Boolean(input.executionId);
-  if (hasTransfer === hasExecution) {
+  if (requiresExecution !== hasExecution) {
     throw new Error(
-      "postLedgerEntry requires exactly one of transferId or executionId",
+      requiresExecution
+        ? `postLedgerEntry: entryType "${input.entryType}" requires an executionId`
+        : `postLedgerEntry: entryType "${input.entryType}" must not have an executionId`,
     );
   }
 
@@ -38,7 +41,6 @@ export async function postLedgerEntry(
       accountId: input.accountId,
       entryType: input.entryType,
       amount: amount.toString(),
-      transferId: input.transferId,
       executionId: input.executionId,
       occurredAt: input.occurredAt ?? new Date(),
     },

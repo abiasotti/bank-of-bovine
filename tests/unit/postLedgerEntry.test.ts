@@ -20,21 +20,20 @@ function makeFakeTx() {
 }
 
 describe("postLedgerEntry", () => {
-  it("rejects when neither transferId nor executionId is provided", async () => {
+  it("rejects a buy/sell entry with no executionId", async () => {
     const { tx } = makeFakeTx();
     await expect(
       postLedgerEntry(tx, { accountId: "a", entryType: "buy", amount: "-100" }),
     ).rejects.toThrow();
   });
 
-  it("rejects when both transferId and executionId are provided", async () => {
+  it("rejects a seed_funding entry that provides an executionId", async () => {
     const { tx } = makeFakeTx();
     await expect(
       postLedgerEntry(tx, {
         accountId: "a",
-        entryType: "buy",
-        amount: "-100",
-        transferId: "t1",
+        entryType: "seed_funding",
+        amount: "500000",
         executionId: "e1",
       }),
     ).rejects.toThrow();
@@ -61,7 +60,17 @@ describe("postLedgerEntry", () => {
       executionId: "e1",
     });
     expect(created[0].amount).toBe("-250.5");
-    expect(created[0].transferId).toBeUndefined();
     expect(created[0].executionId).toBe("e1");
+  });
+
+  it("creates a seed_funding entry with no executionId", async () => {
+    const { tx, created } = makeFakeTx();
+    await postLedgerEntry(tx, {
+      accountId: "a",
+      entryType: "seed_funding",
+      amount: "500000",
+    });
+    expect(created[0].amount).toBe("500000");
+    expect(created[0].executionId).toBeUndefined();
   });
 });

@@ -7,7 +7,7 @@ export async function getCurrentUser() {
 
   return prisma.user.findUnique({
     where: { id: session.user.id },
-    include: { account: true, externalBankAccount: true },
+    include: { account: true },
   });
 }
 

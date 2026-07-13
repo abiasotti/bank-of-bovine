@@ -1,6 +1,5 @@
 import { describe, it, expect, afterEach, afterAll } from "vitest";
 import { prisma } from "@/lib/db/client";
-import { createTransfer } from "@/lib/ledger/transferService";
 import { getAccountBalance } from "@/lib/ledger/getAccountBalance";
 import { createOrder, cancelOrder } from "@/lib/orders/orderService";
 import { evaluateOrders } from "@/lib/orders/orderEvaluator";
@@ -29,15 +28,9 @@ describe("order fill flow (integration)", () => {
   });
 
   it("funds an account, fills a market buy into a tax lot, then a crossing GTC limit sell consumes lots FIFO with correct realized gain/loss and a consistent ledger balance", async () => {
-    const { account, externalBankAccount } = await createTestUser();
+    const { account } = await createTestUser();
     const security = await prisma.security.findUniqueOrThrow({
       where: { symbol: "AAPL" },
-    });
-
-    await createTransfer({
-      accountId: account.id,
-      externalBankAccountId: externalBankAccount.id,
-      amount: "100000",
     });
 
     await setQuote(security.id, "100.00");
@@ -53,7 +46,8 @@ describe("order fill flow (integration)", () => {
       DURING_MARKET_HOURS,
     );
     expect(buy1.status).toBe("filled");
-    expect((await getAccountBalance(account.id)).toString()).toBe("99000");
+    // 500000 (starting balance) - 1000 (buy1: 10*100)
+    expect((await getAccountBalance(account.id)).toString()).toBe("499000");
 
     await setQuote(security.id, "120.00");
     await createOrder(
@@ -117,19 +111,14 @@ describe("order fill flow (integration)", () => {
     });
     expect(lotConsumptions).toHaveLength(2);
 
-    // 99000 (after buy1) - 600 (buy2: 5*120) + 1440 (sell proceeds: 12*120)
-    expect((await getAccountBalance(account.id)).toString()).toBe("99840");
+    // 499000 (after buy1) - 600 (buy2: 5*120) + 1440 (sell proceeds: 12*120)
+    expect((await getAccountBalance(account.id)).toString()).toBe("499840");
   });
 
   it("never fills a cancelled order even if a later price crosses its limit", async () => {
-    const { account, externalBankAccount } = await createTestUser();
+    const { account } = await createTestUser();
     const security = await prisma.security.findUniqueOrThrow({
       where: { symbol: "MSFT" },
-    });
-    await createTransfer({
-      accountId: account.id,
-      externalBankAccountId: externalBankAccount.id,
-      amount: "10000",
     });
     await setQuote(security.id, "50.00");
 
@@ -154,14 +143,9 @@ describe("order fill flow (integration)", () => {
   });
 
   it("expires day orders past their window instead of filling them", async () => {
-    const { account, externalBankAccount } = await createTestUser();
+    const { account } = await createTestUser();
     const security = await prisma.security.findUniqueOrThrow({
       where: { symbol: "TSLA" },
-    });
-    await createTransfer({
-      accountId: account.id,
-      externalBankAccountId: externalBankAccount.id,
-      amount: "10000",
     });
     await setQuote(security.id, "50.00");
 
@@ -188,17 +172,13 @@ describe("order fill flow (integration)", () => {
   });
 
   it("rejects a market buy that would exceed the account's cash balance, leaving no dangling order", async () => {
-    const { account, externalBankAccount } = await createTestUser();
+    const { account } = await createTestUser();
     const security = await prisma.security.findUniqueOrThrow({
       where: { symbol: "GOOGL" },
     });
-    await createTransfer({
-      accountId: account.id,
-      externalBankAccountId: externalBankAccount.id,
-      amount: "100",
-    });
     await setQuote(security.id, "500.00");
 
+    // 500 * 2000 = 1,000,000, well over the fixed 500,000 starting balance.
     await expect(
       createOrder(
         {
@@ -207,7 +187,7 @@ describe("order fill flow (integration)", () => {
           side: "buy",
           orderType: "market",
           timeInForce: "day",
-          quantity: "1",
+          quantity: "2000",
         },
         DURING_MARKET_HOURS,
       ),
@@ -219,14 +199,9 @@ describe("order fill flow (integration)", () => {
   });
 
   it("rejects a sell that exceeds owned shares (no short selling)", async () => {
-    const { account, externalBankAccount } = await createTestUser();
+    const { account } = await createTestUser();
     const security = await prisma.security.findUniqueOrThrow({
       where: { symbol: "AMZN" },
-    });
-    await createTransfer({
-      accountId: account.id,
-      externalBankAccountId: externalBankAccount.id,
-      amount: "10000",
     });
     await setQuote(security.id, "100.00");
 
@@ -247,14 +222,9 @@ describe("order fill flow (integration)", () => {
   });
 
   it("queues a market order placed while the market is closed instead of rejecting it, then fills it at the next market-hours evaluation", async () => {
-    const { account, externalBankAccount } = await createTestUser();
+    const { account } = await createTestUser();
     const security = await prisma.security.findUniqueOrThrow({
       where: { symbol: "AAPL" },
-    });
-    await createTransfer({
-      accountId: account.id,
-      externalBankAccountId: externalBankAccount.id,
-      amount: "10000",
     });
     await setQuote(security.id, "100.00");
 
@@ -291,14 +261,9 @@ describe("order fill flow (integration)", () => {
   });
 
   it("still accepts a limit order while the market is closed, but leaves it pending until a market-hours evaluation", async () => {
-    const { account, externalBankAccount } = await createTestUser();
+    const { account } = await createTestUser();
     const security = await prisma.security.findUniqueOrThrow({
       where: { symbol: "MSFT" },
-    });
-    await createTransfer({
-      accountId: account.id,
-      externalBankAccountId: externalBankAccount.id,
-      amount: "10000",
     });
     await setQuote(security.id, "100.00");
 

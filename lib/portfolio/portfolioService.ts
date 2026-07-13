@@ -122,7 +122,7 @@ export async function getPortfolioSummary(
   );
 
   const depositsResult = await prisma.ledgerEntry.aggregate({
-    where: { accountId, entryType: "transfer_in" },
+    where: { accountId, entryType: "seed_funding" },
     _sum: { amount: true },
   });
   const netDeposits = new Decimal(depositsResult._sum.amount ?? 0);
