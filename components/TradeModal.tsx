@@ -4,6 +4,7 @@ import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { createOrderAction } from "@/lib/orders/actions";
 import { Decimal, formatCurrency, formatShares } from "@/lib/money";
+import { MARKET_HOURS_DESCRIPTION } from "@/lib/market/marketHours";
 
 export interface OpenLotOption {
   id: string;
@@ -18,12 +19,14 @@ export function TradeModal({
   latestPrice,
   availableCash,
   openLots,
+  marketOpen,
 }: {
   symbol: string;
   side: "buy" | "sell";
   latestPrice: string | null;
   availableCash?: string | null;
   openLots?: OpenLotOption[];
+  marketOpen: boolean;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const router = useRouter();
@@ -134,6 +137,13 @@ export function TradeModal({
           {error && (
             <p role="alert" className="text-sm text-red-600">
               {error}
+            </p>
+          )}
+
+          {!marketOpen && (
+            <p className="rounded bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              The market is closed ({MARKET_HOURS_DESCRIPTION}). This order
+              will be queued and execute once the market reopens.
             </p>
           )}
 

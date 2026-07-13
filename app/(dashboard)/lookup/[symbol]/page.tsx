@@ -4,6 +4,7 @@ import { requireCurrentUser } from "@/lib/auth/session";
 import { Decimal, formatCurrency } from "@/lib/money";
 import { getQuoteProviderKind } from "@/lib/quotes/quoteService";
 import { getAccountBalance } from "@/lib/ledger/getAccountBalance";
+import { isMarketOpen } from "@/lib/market/marketHours";
 import { TradeModal } from "@/components/TradeModal";
 import { LiveQuoteView } from "@/components/LiveQuoteView";
 import { LiveChart } from "@/components/LiveChart";
@@ -165,6 +166,7 @@ export default async function LookupDetailPage({
             side="buy"
             latestPrice={price?.toString() ?? null}
             availableCash={cashBalance.toString()}
+            marketOpen={isMarketOpen()}
           />
           <TradeModal
             symbol={security.symbol}
@@ -176,6 +178,7 @@ export default async function LookupDetailPage({
               costBasisPerShare: lot.costBasisPerShare.toString(),
               acquiredAt: lot.acquiredAt.toISOString(),
             }))}
+            marketOpen={isMarketOpen()}
           />
         </div>
       </div>

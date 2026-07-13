@@ -2,6 +2,7 @@ import { prisma } from "@/lib/db/client";
 import { Decimal } from "@/lib/money";
 import { executeOrderFill, InsufficientFundsError } from "@/lib/orders/executeFill";
 import { InsufficientSharesError } from "@/lib/taxlots/lotSelection";
+import { isMarketOpen } from "@/lib/market/marketHours";
 
 interface EvaluableOrder {
   id: string;
@@ -29,25 +30,32 @@ function isMatched(order: EvaluableOrder, price: Decimal): boolean {
       ? price.greaterThanOrEqualTo(stop)
       : price.lessThanOrEqualTo(stop);
   }
-  // Market orders fill inline at creation and never reach the evaluator
-  // as pending.
-  return false;
+  // A pending market order only ever exists because it was placed while
+  // the market was closed (otherwise it fills inline at creation) - it has
+  // no price condition, so it's always ready to fill as soon as the
+  // evaluator sees the market open (a market-on-open order).
+  return true;
 }
 
 // Called by the scheduler. Expires past-due day orders, then matches
-// pending limit/stop orders against the latest quote per security and
-// fills the ones whose condition is met - one DB transaction per order so
-// a failure on one order never blocks the rest of the batch.
-export async function evaluateOrders(): Promise<void> {
-  const now = new Date();
-
+// pending market/limit/stop orders against the latest quote per security
+// and fills the ones whose condition is met - one DB transaction per order
+// so a failure on one order never blocks the rest of the batch. `now`
+// defaults to the real clock; tests pin it to a known in/out-of-hours
+// instant instead of the flow being at the mercy of whatever time CI runs.
+export async function evaluateOrders(now: Date = new Date()): Promise<void> {
   await prisma.order.updateMany({
     where: { status: "pending", timeInForce: "day", expiresAt: { lt: now } },
     data: { status: "expired" },
   });
 
+  // Everything pending (including queued market orders) stays pending and
+  // gets re-evaluated on a future tick - fills should only ever happen
+  // against a real market-hours price.
+  if (!isMarketOpen(now)) return;
+
   const pendingOrders = await prisma.order.findMany({
-    where: { status: "pending", orderType: { in: ["limit", "stop"] } },
+    where: { status: "pending", orderType: { in: ["market", "limit", "stop"] } },
   });
   if (pendingOrders.length === 0) return;
 
