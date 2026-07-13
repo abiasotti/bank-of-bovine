@@ -61,7 +61,11 @@ services:
       target: builder
     environment:
       DATABASE_URL: postgres://bob:${POSTGRES_PASSWORD:-bob_dev_password}@postgres:5432/bank_of_bovine?schema=public
-    command: npx prisma migrate deploy
+    # Not `npx prisma migrate deploy` - npx/npm are stripped from this
+    # image (see the Dockerfile's builder stage) to keep npm's own bundled
+    # dependencies out of the Trivy image scan. Prisma's local binary
+    # doesn't need npm to run.
+    command: node_modules/.bin/prisma migrate deploy
     depends_on:
       postgres:
         condition: service_healthy
