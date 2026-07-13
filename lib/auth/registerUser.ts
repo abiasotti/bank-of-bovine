@@ -1,6 +1,11 @@
 import { z } from "zod";
 import { prisma } from "@/lib/db/client";
 import { hashPassword } from "@/lib/auth/password";
+import { postLedgerEntry } from "@/lib/ledger/postLedgerEntry";
+
+// Every account starts with the same cash so the leaderboard measures
+// trading skill, not who deposited more - there's no funding flow.
+export const STARTING_CASH_BALANCE = "500000";
 
 export const registerUserSchema = z.object({
   email: z.email(),
@@ -17,9 +22,10 @@ export class EmailAlreadyRegisteredError extends Error {
   }
 }
 
-// Every user needs an Account + ExternalBankAccount + Watchlist to exist
-// before anything else in the app (transfers, orders, watchlists) works, so
-// they're created together in one transaction at registration time.
+// Every user needs an Account + Watchlist to exist before anything else in
+// the app (orders, watchlists) works, so they're created together - along
+// with the seed_funding ledger entry that gives the new account its
+// starting cash - in one transaction at registration time.
 export async function registerUser(input: RegisterUserInput) {
   const normalized = {
     ...input,
@@ -41,8 +47,10 @@ export async function registerUser(input: RegisterUserInput) {
     const account = await tx.account.create({
       data: { userId: user.id },
     });
-    await tx.externalBankAccount.create({
-      data: { userId: user.id },
+    await postLedgerEntry(tx, {
+      accountId: account.id,
+      entryType: "seed_funding",
+      amount: STARTING_CASH_BALANCE,
     });
     await tx.watchlist.create({
       data: { accountId: account.id },

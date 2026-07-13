@@ -1,9 +1,10 @@
 # Bank of the Bovine Overlord
 
-A multi-user fake-money brokerage simulator. Users fund a simulated brokerage
-account from a fake external bank account, then buy/sell simulated positions
-in real stocks. Tracks cost basis, tax lots, and portfolio performance, with
-a leaderboard for bragging rights.
+A multi-user fake-money brokerage simulator. Every account starts with the
+same fixed cash balance, then buy/sell simulated positions in real stocks.
+Tracks cost basis, tax lots, and portfolio performance, with a leaderboard
+for bragging rights - since everyone starts even, the leaderboard measures
+trading skill, not who deposited more.
 
 **Not a real financial product.** No real money, no real trades. Quote data
 is simulated — the app displays a persistent disclaimer and is not a source
@@ -24,8 +25,8 @@ and **Caddy** — matching the spec's target architecture.
 - **Accounts & ledger**: event-sourced ledger (`ledger_entries`) — cash
   balances are always derived by summing entries, never stored as a mutable
   column
-- **Funding**: transfers from a fake external bank account into the
-  brokerage account (see "Funding / Transfer Mechanic" in the spec)
+- **Funding**: every account is seeded with a fixed starting cash balance
+  ($500,000) at registration - no funding/transfer flow, everyone starts even
 - **Quotes**: real-time via Finnhub's free tier, or a random-walk mock —
   swappable via `QUOTE_PROVIDER`, polled by the Go worker and persisted to
   Postgres (see "Quote data" below)
@@ -208,8 +209,8 @@ npm run dev
 
 Visit [http://localhost:3000](http://localhost:3000) — you'll be redirected
 to `/login`. Register an account to get started; every new account is
-funded via the "Transfer funds" form on the Account page (there's no
-"add funds" button by design — see the spec's funding mechanic).
+automatically funded with a fixed $500,000 starting balance - there's no
+funding flow, everyone starts even.
 
 ### Running the full containerized stack
 
