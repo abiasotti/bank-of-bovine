@@ -31,7 +31,7 @@ export function TradeModal({
   const dialogRef = useRef<HTMLDialogElement>(null);
   const router = useRouter();
   const [orderType, setOrderType] = useState<"market" | "limit" | "stop">(
-    marketOpen ? "market" : "limit",
+    "market",
   );
   const [lotSelectionMethod, setLotSelectionMethod] = useState<
     "fifo" | "lifo" | "specific"
@@ -142,9 +142,8 @@ export function TradeModal({
 
           {!marketOpen && (
             <p className="rounded bg-amber-50 px-3 py-2 text-sm text-amber-800">
-              The market is closed ({MARKET_HOURS_DESCRIPTION}). Market
-              orders will be rejected; limit and stop orders can still be
-              placed and will queue until the market reopens.
+              The market is closed ({MARKET_HOURS_DESCRIPTION}). This order
+              will be queued and execute once the market reopens.
             </p>
           )}
 
@@ -172,9 +171,7 @@ export function TradeModal({
                 }
                 className="rounded border px-3 py-2"
               >
-                <option value="market" disabled={!marketOpen}>
-                  Market{!marketOpen && " (closed)"}
-                </option>
+                <option value="market">Market</option>
                 <option value="limit">Limit</option>
                 <option value="stop">Stop</option>
               </select>

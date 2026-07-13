@@ -1,7 +1,7 @@
 import { prisma } from "@/lib/db/client";
 import { Decimal, toMoney, toShareQuantity, isPositive } from "@/lib/money";
 import { executeOrderFill } from "@/lib/orders/executeFill";
-import { isMarketOpen, MARKET_HOURS_DESCRIPTION } from "@/lib/market/marketHours";
+import { isMarketOpen, nextMarketClose } from "@/lib/market/marketHours";
 
 export type OrderSide = "buy" | "sell";
 export type OrderType = "market" | "limit" | "stop";
@@ -35,17 +35,14 @@ interface CreateOrderInput {
   specificLotIds?: string[];
 }
 
-function endOfDayUtc(from: Date): Date {
-  const end = new Date(from);
-  end.setUTCHours(23, 59, 59, 999);
-  return end;
-}
-
 // No partial fills in Phase 1: an order either fills completely or stays
 // pending/cancelled/expired. Market orders fill inline in the same
-// transaction as order creation - if the fill fails (e.g. insufficient
-// funds), the whole order creation rolls back rather than leaving a
-// dangling pending row for an order type that was never meant to wait.
+// transaction as order creation when the market's open - if the fill fails
+// (e.g. insufficient funds), the whole order creation rolls back rather
+// than leaving a dangling pending row. Placed while the market's closed, a
+// market order queues just like limit/stop and fills at the next available
+// quote once the evaluator sees the market open (effectively a
+// market-on-open order).
 // `now` defaults to the real clock; tests pin it to a known in/out-of-hours
 // instant instead of the flow being at the mercy of whatever time CI runs.
 export async function createOrder(
@@ -67,14 +64,7 @@ export async function createOrder(
       "Sell orders require a lot selection method.",
     );
   }
-  // Market orders fill inline against the latest quote, so they only make
-  // sense while the market is actually open. Limit/stop orders are fine to
-  // accept anytime - they just queue and wait for the evaluator.
-  if (input.orderType === "market" && !isMarketOpen(now)) {
-    throw new InvalidOrderError(
-      `The market is closed. Market orders can only be placed during regular trading hours (${MARKET_HOURS_DESCRIPTION}).`,
-    );
-  }
+  const marketOpen = isMarketOpen(now);
 
   return prisma.$transaction(async (tx) => {
     const order = await tx.order.create({
@@ -98,11 +88,12 @@ export async function createOrder(
         specificLotIds: input.specificLotIds ?? [],
         status: "pending",
         submittedAt: now,
-        expiresAt: input.timeInForce === "day" ? endOfDayUtc(now) : undefined,
+        expiresAt:
+          input.timeInForce === "day" ? nextMarketClose(now) : undefined,
       },
     });
 
-    if (input.orderType === "market") {
+    if (input.orderType === "market" && marketOpen) {
       const latestQuote = await tx.quote.findFirst({
         where: { securityId: input.securityId },
         orderBy: { asOf: "desc" },

@@ -246,7 +246,7 @@ describe("order fill flow (integration)", () => {
     ).rejects.toThrow();
   });
 
-  it("rejects a market order placed while the market is closed", async () => {
+  it("queues a market order placed while the market is closed instead of rejecting it, then fills it at the next market-hours evaluation", async () => {
     const { account, externalBankAccount } = await createTestUser();
     const security = await prisma.security.findUniqueOrThrow({
       where: { symbol: "AAPL" },
@@ -258,23 +258,36 @@ describe("order fill flow (integration)", () => {
     });
     await setQuote(security.id, "100.00");
 
-    await expect(
-      createOrder(
-        {
-          accountId: account.id,
-          securityId: security.id,
-          side: "buy",
-          orderType: "market",
-          timeInForce: "day",
-          quantity: "1",
-        },
-        OUTSIDE_MARKET_HOURS,
-      ),
-    ).rejects.toThrow(/market is closed/i);
+    const order = await createOrder(
+      {
+        accountId: account.id,
+        securityId: security.id,
+        side: "buy",
+        orderType: "market",
+        timeInForce: "day",
+        quantity: "1",
+      },
+      OUTSIDE_MARKET_HOURS,
+    );
+    expect(order.status).toBe("pending");
+    // A "day" order placed after-hours should stay alive through the next
+    // session's close, not expire before the market it's waiting for even
+    // opens.
+    expect(order.expiresAt!.getTime()).toBeGreaterThan(
+      OUTSIDE_MARKET_HOURS.getTime(),
+    );
 
+    await evaluateOrders(OUTSIDE_MARKET_HOURS);
     expect(
-      await prisma.order.count({ where: { accountId: account.id } }),
-    ).toBe(0);
+      (await prisma.order.findUniqueOrThrow({ where: { id: order.id } }))
+        .status,
+    ).toBe("pending");
+
+    await evaluateOrders(DURING_MARKET_HOURS);
+    const filled = await prisma.order.findUniqueOrThrow({
+      where: { id: order.id },
+    });
+    expect(filled.status).toBe("filled");
   });
 
   it("still accepts a limit order while the market is closed, but leaves it pending until a market-hours evaluation", async () => {
