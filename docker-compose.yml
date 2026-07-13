@@ -3,6 +3,13 @@
 # instead (postgres + redis + worker only, app runs via `npm run dev` on
 # the host for hot reload). This file is for full-stack verification and
 # as the deployment reference.
+#
+# app/worker pull the images published to GHCR by .github/workflows/publish.yml
+# on every merge to master, so a deploy target only needs this file plus
+# .env - not the source tree or a build toolchain. Override the tag (e.g.
+# to pin a specific commit) with IMAGE_TAG=sha-xxxxxxx. To verify local,
+# uncommitted changes instead of the last published image, run
+# `docker compose build app worker` first.
 services:
   postgres:
     image: postgres:16-alpine
@@ -37,6 +44,10 @@ services:
   # `builder` stage (has the full `prisma` CLI + devDependencies) since the
   # `app` service's runtime image is pruned to just what's needed to run
   # the server (next.config.ts's `output: "standalone"`), not admin tooling.
+  # Unlike app/worker, this stays a local build (not a published GHCR
+  # image) - only the builder stage has the CLI + migrations folder, and
+  # publish.yml doesn't push that stage, so this still needs the source
+  # tree on the deploy target.
   migrate:
     build:
       context: .
@@ -50,6 +61,7 @@ services:
         condition: service_healthy
 
   app:
+    image: ghcr.io/abiasotti/bank-of-bovine-app:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile
@@ -70,6 +82,7 @@ services:
         condition: service_completed_successfully
 
   worker:
+    image: ghcr.io/abiasotti/bank-of-bovine-worker:${IMAGE_TAG:-latest}
     build:
       context: ./worker
       dockerfile: Dockerfile
