@@ -1,0 +1,67 @@
+# Local dev infra: postgres + redis + worker. Run this alongside
+# `npm run dev` (the app itself stays on the host for fast hot-reload) -
+# together they're a complete local loop, matching what docker-compose.yml
+# runs in full-stack/prod form. The worker reaches the host's dev server
+# via host.docker.internal for its order-evaluation trigger.
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bob
+      POSTGRES_PASSWORD: bob_dev_password
+      POSTGRES_DB: bank_of_bovine
+    ports:
+      - "5432:5432"
+    volumes:
+      - bob_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bob -d bank_of_bovine"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    env_file:
+      - ./worker/.env
+    environment:
+      # Overrides worker/.env's DATABASE_URL/REDIS_URL/APP_INTERNAL_URL,
+      # which are written for `go run .` on the host - inside this
+      # compose network, postgres/redis are reached by service name and
+      # the app (still running via `npm run dev` on the host) is reached
+      # via host.docker.internal. No "?schema=public" here - that's a
+      # Prisma-specific connection-string convention pgx doesn't
+      # understand (it tries to pass unknown query params through to
+      # Postgres as raw connection parameters and fails); Postgres's
+      # default search_path already includes "public" anyway.
+      DATABASE_URL: postgres://bob:bob_dev_password@postgres:5432/bank_of_bovine
+      REDIS_URL: redis://redis:6379
+      APP_INTERNAL_URL: http://host.docker.internal:3000
+    # host.docker.internal resolves automatically on Docker Desktop
+    # (macOS/Windows) - confirmed working as-is. On native Linux Docker
+    # Engine, uncomment this to make it resolve there too:
+    # extra_hosts:
+    #   - "host.docker.internal:host-gateway"
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+
+volumes:
+  bob_postgres_data:

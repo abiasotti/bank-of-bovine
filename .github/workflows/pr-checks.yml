@@ -1,0 +1,148 @@
+name: PR checks
+
+on:
+  pull_request:
+    branches: [master]
+
+env:
+  # CI-only values, never used outside this workflow.
+  DATABASE_URL: postgresql://bob:bob_dev_password@localhost:5432/bank_of_bovine?schema=public
+  AUTH_SECRET: ci-test-secret-not-for-production
+  INTERNAL_API_SECRET: ci-test-secret-not-for-production
+  QUOTE_PROVIDER: mock
+  REDIS_URL: redis://localhost:6379
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+          cache: npm
+      - run: npm ci
+      - run: npm run lint
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: worker/go.sum
+      - name: gofmt check
+        working-directory: worker
+        run: |
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "The following files are not gofmt'd:"
+            echo "$unformatted"
+            exit 1
+          fi
+      - name: go vet
+        working-directory: worker
+        run: go vet ./...
+
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16-alpine
+        env:
+          POSTGRES_USER: bob
+          POSTGRES_PASSWORD: bob_dev_password
+          POSTGRES_DB: bank_of_bovine
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U bob -d bank_of_bovine"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+          cache: npm
+      - run: npm ci
+      - run: npx prisma migrate deploy
+      - run: npm run test
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: worker/go.sum
+      - name: go test
+        working-directory: worker
+        run: go test ./...
+
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "26"
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm run build
+      - uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache-dependency-path: worker/go.sum
+      - name: go build
+        working-directory: worker
+        run: go build ./...
+
+  trivy-fs:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    steps:
+      - uses: actions/checkout@v4
+      - name: Trivy filesystem scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          scan-type: fs
+          scan-ref: .
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          format: sarif
+          output: trivy-fs-results.sarif
+      - name: Upload results to Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-fs-results.sarif
+
+  trivy-image:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      security-events: write
+    strategy:
+      matrix:
+        include:
+          - name: app
+            dockerfile: Dockerfile
+            context: .
+          - name: worker
+            dockerfile: worker/Dockerfile
+            context: worker
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build ${{ matrix.name }} image
+        run: docker build -t bank-of-bovine-${{ matrix.name }}:pr -f ${{ matrix.dockerfile }} ${{ matrix.context }}
+      - name: Trivy image scan (${{ matrix.name }})
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: bank-of-bovine-${{ matrix.name }}:pr
+          severity: CRITICAL,HIGH
+          exit-code: "1"
+          format: sarif
+          output: trivy-${{ matrix.name }}-image-results.sarif
+      - name: Upload results to Security tab
+        if: always()
+        uses: github/codeql-action/upload-sarif@v3
+        with:
+          sarif_file: trivy-${{ matrix.name }}-image-results.sarif
+          category: trivy-image-${{ matrix.name }}

@@ -1,0 +1,114 @@
+# Full prod-shaped stack: postgres, redis, worker, app, caddy - all
+# containerized. For active development, use docker-compose.dev.yml
+# instead (postgres + redis + worker only, app runs via `npm run dev` on
+# the host for hot reload). This file is for full-stack verification and
+# as the deployment reference.
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: bob
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-bob_dev_password}
+      POSTGRES_DB: bank_of_bovine
+    # Published for local admin access (psql, Prisma Studio) at this
+    # project's scale. Remove for an internet-facing deployment where
+    # only `app`/`worker`/`migrate` should reach Postgres.
+    ports:
+      - "5432:5432"
+    volumes:
+      - bob_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U bob -d bank_of_bovine"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # One-off: applies pending Prisma migrations, then exits. Uses the
+  # `builder` stage (has the full `prisma` CLI + devDependencies) since the
+  # `app` service's runtime image is pruned to just what's needed to run
+  # the server (next.config.ts's `output: "standalone"`), not admin tooling.
+  migrate:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      target: builder
+    environment:
+      DATABASE_URL: postgres://bob:${POSTGRES_PASSWORD:-bob_dev_password}@postgres:5432/bank_of_bovine?schema=public
+    command: npx prisma migrate deploy
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      DATABASE_URL: postgres://bob:${POSTGRES_PASSWORD:-bob_dev_password}@postgres:5432/bank_of_bovine?schema=public
+      REDIS_URL: redis://redis:6379
+      AUTH_SECRET: ${AUTH_SECRET:?AUTH_SECRET is required}
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:?INTERNAL_API_SECRET is required}
+      QUOTE_PROVIDER: ${QUOTE_PROVIDER:-mock}
+      FINNHUB_API_KEY: ${FINNHUB_API_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  worker:
+    build:
+      context: ./worker
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      # No "?schema=public" here - pgx (unlike Prisma's pg-based adapter)
+      # tries to pass unrecognized query params through to Postgres as
+      # raw connection parameters and errors; Postgres's default
+      # search_path already includes "public" anyway.
+      DATABASE_URL: postgres://bob:${POSTGRES_PASSWORD:-bob_dev_password}@postgres:5432/bank_of_bovine
+      REDIS_URL: redis://redis:6379
+      INTERNAL_API_SECRET: ${INTERNAL_API_SECRET:?INTERNAL_API_SECRET is required}
+      APP_INTERNAL_URL: http://app:3000
+      QUOTE_PROVIDER: ${QUOTE_PROVIDER:-mock}
+      FINNHUB_API_KEY: ${FINNHUB_API_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
+  caddy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN:-localhost}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - app
+
+volumes:
+  bob_postgres_data:
+  caddy_data:
+  caddy_config:

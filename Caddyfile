@@ -1,0 +1,15 @@
+# DOMAIN defaults to localhost for local full-stack testing (Caddy
+# auto-generates a locally-trusted self-signed cert for non-public
+# hostnames like localhost - no real domain needed). For actual
+# deployment, set DOMAIN to a real domain pointed at the box's IP and
+# Caddy will automatically get a real Let's Encrypt certificate instead.
+{$DOMAIN:localhost} {
+	# flush_interval -1 disables response buffering - required for
+	# /api/quotes/stream's Server-Sent Events to actually stream through
+	# the proxy instead of hanging until the connection closes. No
+	# `encode gzip` here: gzip needs to build compressed chunks before
+	# flushing, which reintroduces the same buffering problem for SSE.
+	reverse_proxy app:3000 {
+		flush_interval -1
+	}
+}
