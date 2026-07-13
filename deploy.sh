@@ -59,16 +59,37 @@ else
   FINNHUB_API_KEY="${FINNHUB_API_KEY:-}"
 fi
 
+# docker-compose.yml interpolates this straight into
+# postgres://bob:<password>@postgres:5432/... unescaped, so it can only
+# contain characters that are safe unencoded in that position - anything
+# outside RFC 3986 unreserved (letters, digits, '.', '_', '~', '-') risks
+# the URL parser misreading the host/port (base64's '/' is the common
+# offender: Prisma fails with P1013 "invalid port number").
+is_url_safe_password() {
+  case "$1" in
+    *[!A-Za-z0-9_.~-]*) return 1 ;;
+    *) return 0 ;;
+  esac
+}
+
 echo
 if [ -n "${POSTGRES_PASSWORD:-}" ]; then
   prompt POSTGRES_PASSWORD "Postgres password" "$POSTGRES_PASSWORD"
 else
   read -r -p "Postgres password [leave blank to auto-generate]: " POSTGRES_PASSWORD
   if [ -z "$POSTGRES_PASSWORD" ]; then
-    POSTGRES_PASSWORD="$(openssl rand -base64 24)"
+    POSTGRES_PASSWORD="$(openssl rand -hex 24)"
     echo "Generated a random Postgres password."
   fi
 fi
+
+while ! is_url_safe_password "$POSTGRES_PASSWORD"; do
+  echo "That password contains characters that break the DATABASE_URL docker-compose.yml builds. Only letters, digits, '.', '_', '~', '-' are safe there."
+  read -r -p "Enter a URL-safe Postgres password [leave blank to auto-generate]: " POSTGRES_PASSWORD
+  if [ -z "$POSTGRES_PASSWORD" ]; then
+    POSTGRES_PASSWORD="$(openssl rand -hex 24)"
+  fi
+done
 
 # AUTH_SECRET / INTERNAL_API_SECRET are non-human-facing - generate once,
 # then leave alone on every subsequent run so existing sessions and the
