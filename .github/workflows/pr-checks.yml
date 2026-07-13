@@ -144,10 +144,21 @@ jobs:
           - name: worker
             dockerfile: worker/Dockerfile
             context: worker
+          # Same Dockerfile as app, stopped at the `builder` stage - this
+          # is what publish.yml ships as bank-of-bovine-migrate. No `target`
+          # matrix key here on purpose: adding one would change the
+          # auto-generated check-name tuple for every entry (including
+          # app/worker), breaking the exact context strings required by
+          # branch protection. Branching on `matrix.name` in the build step
+          # instead keeps app/worker's entries - and their check names -
+          # untouched.
+          - name: migrate
+            dockerfile: Dockerfile
+            context: .
     steps:
       - uses: actions/checkout@v4
       - name: Build ${{ matrix.name }} image
-        run: docker build -t bank-of-bovine-${{ matrix.name }}:pr -f ${{ matrix.dockerfile }} ${{ matrix.context }}
+        run: docker build -t bank-of-bovine-${{ matrix.name }}:pr -f ${{ matrix.dockerfile }} ${{ matrix.name == 'migrate' && '--target=builder' || '' }} ${{ matrix.context }}
       - name: Trivy image scan (${{ matrix.name }}, SARIF for Security tab)
         uses: aquasecurity/trivy-action@v0.36.0
         with:

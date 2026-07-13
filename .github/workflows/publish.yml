@@ -21,6 +21,18 @@ jobs:
             dockerfile: worker/Dockerfile
             context: worker
             image: ghcr.io/${{ github.repository_owner }}/bank-of-bovine-worker
+          # Same Dockerfile as app, stopped at the `builder` stage (has the
+          # full Prisma CLI + migrations - the app runtime image is pruned
+          # down to just what's needed to run the server). Published in
+          # lockstep with app/worker so `docker compose pull` can never
+          # leave migrate silently stale against a newer app version - that
+          # drift previously caused a real prod outage (migrate ran on an
+          # old schema while app expected the new one).
+          - name: migrate
+            dockerfile: Dockerfile
+            context: .
+            target: builder
+            image: ghcr.io/${{ github.repository_owner }}/bank-of-bovine-migrate
     steps:
       - uses: actions/checkout@v4
 
@@ -45,6 +57,7 @@ jobs:
         with:
           context: ${{ matrix.context }}
           file: ${{ matrix.dockerfile }}
+          target: ${{ matrix.target }}
           push: true
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}

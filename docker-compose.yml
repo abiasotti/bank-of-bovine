@@ -4,12 +4,19 @@
 # the host for hot reload). This file is for full-stack verification and
 # as the deployment reference.
 #
-# app/worker pull the images published to GHCR by .github/workflows/publish.yml
-# on every merge to master, so a deploy target only needs this file plus
-# .env - not the source tree or a build toolchain. Override the tag (e.g.
-# to pin a specific commit) with IMAGE_TAG=sha-xxxxxxx. To verify local,
-# uncommitted changes instead of the last published image, run
-# `docker compose build app worker` first.
+# app/worker/migrate all pull the images published to GHCR by
+# .github/workflows/publish.yml on every merge to master, so a deploy
+# target only needs this file plus .env - not the source tree or a build
+# toolchain. Override the tag (e.g. to pin a specific commit) with
+# IMAGE_TAG=sha-xxxxxxx. To verify local, uncommitted changes instead of
+# the last published image, run `docker compose build` first.
+#
+# All three MUST be pulled/deployed together (`docker compose pull` covers
+# all of them). Letting migrate drift out of sync with app/worker - e.g. by
+# only rebuilding app/worker and never migrate - causes exactly the outage
+# this comment is here to prevent: the app expects a schema migrate hasn't
+# applied yet, and every write against the mismatched column/constraint set
+# fails.
 services:
   postgres:
     image: postgres:16-alpine
@@ -43,12 +50,11 @@ services:
   # One-off: applies pending Prisma migrations, then exits. Uses the
   # `builder` stage (has the full `prisma` CLI + devDependencies) since the
   # `app` service's runtime image is pruned to just what's needed to run
-  # the server (next.config.ts's `output: "standalone"`), not admin tooling.
-  # Unlike app/worker, this stays a local build (not a published GHCR
-  # image) - only the builder stage has the CLI + migrations folder, and
-  # publish.yml doesn't push that stage, so this still needs the source
-  # tree on the deploy target.
+  # the server (next.config.ts's `output: "standalone"`), not admin
+  # tooling - published separately as bank-of-bovine-migrate so it stays
+  # in lockstep with whatever app/worker version is being deployed.
   migrate:
+    image: ghcr.io/abiasotti/bank-of-bovine-migrate:${IMAGE_TAG:-latest}
     build:
       context: .
       dockerfile: Dockerfile
