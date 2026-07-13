@@ -12,6 +12,13 @@ async function setQuote(securityId: string, price: string) {
   });
 }
 
+// A fixed Wednesday 11am ET instant, safely inside regular trading hours -
+// market-order fills and evaluator fills shouldn't depend on whatever real
+// wall-clock time CI happens to run at.
+const DURING_MARKET_HOURS = new Date("2026-07-15T15:00:00Z");
+// A fixed Saturday noon ET instant - safely outside trading hours.
+const OUTSIDE_MARKET_HOURS = new Date("2026-07-18T16:00:00Z");
+
 describe("order fill flow (integration)", () => {
   afterEach(async () => {
     await truncateTestData();
@@ -34,26 +41,32 @@ describe("order fill flow (integration)", () => {
     });
 
     await setQuote(security.id, "100.00");
-    const buy1 = await createOrder({
-      accountId: account.id,
-      securityId: security.id,
-      side: "buy",
-      orderType: "market",
-      timeInForce: "day",
-      quantity: "10",
-    });
+    const buy1 = await createOrder(
+      {
+        accountId: account.id,
+        securityId: security.id,
+        side: "buy",
+        orderType: "market",
+        timeInForce: "day",
+        quantity: "10",
+      },
+      DURING_MARKET_HOURS,
+    );
     expect(buy1.status).toBe("filled");
     expect((await getAccountBalance(account.id)).toString()).toBe("99000");
 
     await setQuote(security.id, "120.00");
-    await createOrder({
-      accountId: account.id,
-      securityId: security.id,
-      side: "buy",
-      orderType: "market",
-      timeInForce: "day",
-      quantity: "5",
-    });
+    await createOrder(
+      {
+        accountId: account.id,
+        securityId: security.id,
+        side: "buy",
+        orderType: "market",
+        timeInForce: "day",
+        quantity: "5",
+      },
+      DURING_MARKET_HOURS,
+    );
 
     const lotsBeforeSell = await prisma.taxLot.findMany({
       where: { accountId: account.id, securityId: security.id },
@@ -76,7 +89,7 @@ describe("order fill flow (integration)", () => {
     });
     expect(sellOrder.status).toBe("pending");
 
-    await evaluateOrders();
+    await evaluateOrders(DURING_MARKET_HOURS);
 
     const filledSellOrder = await prisma.order.findUniqueOrThrow({
       where: { id: sellOrder.id },
@@ -187,14 +200,17 @@ describe("order fill flow (integration)", () => {
     await setQuote(security.id, "500.00");
 
     await expect(
-      createOrder({
-        accountId: account.id,
-        securityId: security.id,
-        side: "buy",
-        orderType: "market",
-        timeInForce: "day",
-        quantity: "1",
-      }),
+      createOrder(
+        {
+          accountId: account.id,
+          securityId: security.id,
+          side: "buy",
+          orderType: "market",
+          timeInForce: "day",
+          quantity: "1",
+        },
+        DURING_MARKET_HOURS,
+      ),
     ).rejects.toThrow();
 
     expect(
@@ -215,15 +231,91 @@ describe("order fill flow (integration)", () => {
     await setQuote(security.id, "100.00");
 
     await expect(
-      createOrder({
+      createOrder(
+        {
+          accountId: account.id,
+          securityId: security.id,
+          side: "sell",
+          orderType: "market",
+          timeInForce: "day",
+          quantity: "1",
+          lotSelectionMethod: "fifo",
+        },
+        DURING_MARKET_HOURS,
+      ),
+    ).rejects.toThrow();
+  });
+
+  it("rejects a market order placed while the market is closed", async () => {
+    const { account, externalBankAccount } = await createTestUser();
+    const security = await prisma.security.findUniqueOrThrow({
+      where: { symbol: "AAPL" },
+    });
+    await createTransfer({
+      accountId: account.id,
+      externalBankAccountId: externalBankAccount.id,
+      amount: "10000",
+    });
+    await setQuote(security.id, "100.00");
+
+    await expect(
+      createOrder(
+        {
+          accountId: account.id,
+          securityId: security.id,
+          side: "buy",
+          orderType: "market",
+          timeInForce: "day",
+          quantity: "1",
+        },
+        OUTSIDE_MARKET_HOURS,
+      ),
+    ).rejects.toThrow(/market is closed/i);
+
+    expect(
+      await prisma.order.count({ where: { accountId: account.id } }),
+    ).toBe(0);
+  });
+
+  it("still accepts a limit order while the market is closed, but leaves it pending until a market-hours evaluation", async () => {
+    const { account, externalBankAccount } = await createTestUser();
+    const security = await prisma.security.findUniqueOrThrow({
+      where: { symbol: "MSFT" },
+    });
+    await createTransfer({
+      accountId: account.id,
+      externalBankAccountId: externalBankAccount.id,
+      amount: "10000",
+    });
+    await setQuote(security.id, "100.00");
+
+    const order = await createOrder(
+      {
         accountId: account.id,
         securityId: security.id,
-        side: "sell",
-        orderType: "market",
-        timeInForce: "day",
+        side: "buy",
+        orderType: "limit",
+        timeInForce: "gtc",
         quantity: "1",
-        lotSelectionMethod: "fifo",
-      }),
-    ).rejects.toThrow();
+        limitPrice: "100",
+      },
+      OUTSIDE_MARKET_HOURS,
+    );
+    expect(order.status).toBe("pending");
+
+    // Condition is already met, but the market's closed - the evaluator
+    // should leave it pending rather than filling against a stale price.
+    await evaluateOrders(OUTSIDE_MARKET_HOURS);
+    expect(
+      (await prisma.order.findUniqueOrThrow({ where: { id: order.id } }))
+        .status,
+    ).toBe("pending");
+
+    // Once the market's open, the same still-matching order fills.
+    await evaluateOrders(DURING_MARKET_HOURS);
+    expect(
+      (await prisma.order.findUniqueOrThrow({ where: { id: order.id } }))
+        .status,
+    ).toBe("filled");
   });
 });

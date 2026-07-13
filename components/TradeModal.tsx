@@ -4,6 +4,7 @@ import { useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { createOrderAction } from "@/lib/orders/actions";
 import { Decimal, formatCurrency, formatShares } from "@/lib/money";
+import { MARKET_HOURS_DESCRIPTION } from "@/lib/market/marketHours";
 
 export interface OpenLotOption {
   id: string;
@@ -18,17 +19,19 @@ export function TradeModal({
   latestPrice,
   availableCash,
   openLots,
+  marketOpen,
 }: {
   symbol: string;
   side: "buy" | "sell";
   latestPrice: string | null;
   availableCash?: string | null;
   openLots?: OpenLotOption[];
+  marketOpen: boolean;
 }) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const router = useRouter();
   const [orderType, setOrderType] = useState<"market" | "limit" | "stop">(
-    "market",
+    marketOpen ? "market" : "limit",
   );
   const [lotSelectionMethod, setLotSelectionMethod] = useState<
     "fifo" | "lifo" | "specific"
@@ -137,6 +140,14 @@ export function TradeModal({
             </p>
           )}
 
+          {!marketOpen && (
+            <p className="rounded bg-amber-50 px-3 py-2 text-sm text-amber-800">
+              The market is closed ({MARKET_HOURS_DESCRIPTION}). Market
+              orders will be rejected; limit and stop orders can still be
+              placed and will queue until the market reopens.
+            </p>
+          )}
+
           <div className="grid grid-cols-3 gap-4">
             <label className="flex flex-col gap-1 text-sm">
               Quantity
@@ -161,7 +172,9 @@ export function TradeModal({
                 }
                 className="rounded border px-3 py-2"
               >
-                <option value="market">Market</option>
+                <option value="market" disabled={!marketOpen}>
+                  Market{!marketOpen && " (closed)"}
+                </option>
                 <option value="limit">Limit</option>
                 <option value="stop">Stop</option>
               </select>

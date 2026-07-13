@@ -1,6 +1,7 @@
 import { prisma } from "@/lib/db/client";
 import { Decimal, toMoney, toShareQuantity, isPositive } from "@/lib/money";
 import { executeOrderFill } from "@/lib/orders/executeFill";
+import { isMarketOpen, MARKET_HOURS_DESCRIPTION } from "@/lib/market/marketHours";
 
 export type OrderSide = "buy" | "sell";
 export type OrderType = "market" | "limit" | "stop";
@@ -45,7 +46,12 @@ function endOfDayUtc(from: Date): Date {
 // transaction as order creation - if the fill fails (e.g. insufficient
 // funds), the whole order creation rolls back rather than leaving a
 // dangling pending row for an order type that was never meant to wait.
-export async function createOrder(input: CreateOrderInput) {
+// `now` defaults to the real clock; tests pin it to a known in/out-of-hours
+// instant instead of the flow being at the mercy of whatever time CI runs.
+export async function createOrder(
+  input: CreateOrderInput,
+  now: Date = new Date(),
+) {
   const quantity = toShareQuantity(input.quantity);
   if (!isPositive(quantity)) {
     throw new InvalidOrderError("Order quantity must be greater than zero.");
@@ -61,8 +67,14 @@ export async function createOrder(input: CreateOrderInput) {
       "Sell orders require a lot selection method.",
     );
   }
-
-  const now = new Date();
+  // Market orders fill inline against the latest quote, so they only make
+  // sense while the market is actually open. Limit/stop orders are fine to
+  // accept anytime - they just queue and wait for the evaluator.
+  if (input.orderType === "market" && !isMarketOpen(now)) {
+    throw new InvalidOrderError(
+      `The market is closed. Market orders can only be placed during regular trading hours (${MARKET_HOURS_DESCRIPTION}).`,
+    );
+  }
 
   return prisma.$transaction(async (tx) => {
     const order = await tx.order.create({
